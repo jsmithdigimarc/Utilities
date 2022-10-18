@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+# Set ###_SERVICE_NAME_### to the name of the micro service you are developing
+SERVICE_NAME="###_SERVICE_NAME_###"
+
+TAG=${TAG:-$SERVICE_NAME}
+REGISTRY=${REGISTRY:-"gcf-artifacts"}
+REGION=${REGION:-""}
+PROJECT=${PROJECT:-""}
+INC_MAJOR=${INC_MAJOR:-false}
+INC_MINOR=${INC_MINOR:-false}
+INC_PATCH=${INC_PATCH:-false}
+BUILD_VERSION=""
+DEPLOY_VERSION=""
+
+while [ $# -gt 0 ]; do
+   if [[ $1 == *"--"* ]]; then
+        PARAM="${1/--/}"
+        PARAM="$(echo $PARAM | tr 'a-z' 'A-Z')"
+        PARAM="$(echo $PARAM | tr '-' '_')"
+        if [[ -z $2 ]] || [[ $2 == *"--"* ]] || [[ $2 == "" ]]; then
+          declare $PARAM=true
+        else
+          declare $PARAM="$2"
+        fi
+   fi
+  shift
+done
+
+[[ -z $REGION ]] && { echo "Missing required flag [region]. Exiting."; exit 1;}
+
+BUILD_VERSION=$(jq -r '.version' package.json)
+DEPLOY_VERSION=$BUILD_VERSION
+
+# Split the string into MAJOR, MINOR, and PATCH
+MAJOR=$(echo $DEPLOY_VERSION | cut -d. -f1)
+MINOR=$(echo $DEPLOY_VERSION | cut -d. -f2)
+PATCH=$(echo $DEPLOY_VERSION | cut -d. -f3)
+
+# if --inc-patch increment PATCH
+if [ $INC_PATCH == true ]; then
+  PATCH=$(expr $PATCH + 1)
+fi
+
+# if --inc-minor increment MINOR PATCH back to 0
+if [ $INC_MINOR == true ]; then
+  PATCH=0
+  MINOR=$(expr $MINOR + 1)
+fi
+
+# if --inc-major increment MAJOR and set MINOR and PATCH back to 0
+if [ $INC_MAJOR == true ]; then
+  PATCH=0
+  MINOR=0
+  MAJOR=$(expr $MAJOR + 1)
+fi
+
+# if any of --inc-major, --inc-minor, --inc-patch set the version to the new version
+if [[ ( $INC_MAJOR == true ) || ( $INC_MINOR == true ) || ( $INC_PATCH == true ) ]]; then
+  DEPLOY_VERSION="$MAJOR.$MINOR.$PATCH"
+  echo "[ $(date +%T) ] Incrementing package.json version. Was [$BUILD_VERSION] will be [$DEPLOY_VERSION]."
+fi
+
+# if no --project attempt to load gcloud core/project
+if [[ -z $PROJECT ]]; then
+  GCLOUD_PROJECT="$(gcloud config get core/project)"
+  # if no --project and no gcloud core/project exit the script
+  if [[ -z $GCLOUD_PROJECT ]]; then
+    echo "Missing flag [project] and no gcloud default project set. Exiting."
+    exit 1
+  else
+    echo "[ $(date +%T) ] Missing flag [project]. Using gcloud default ($GCLOUD_PROJECT)."
+    PROJECT=$GCLOUD_PROJECT
+  fi
+fi
+
+echo "[ $(date +%T) ] Pushing container $TAG:$DEPLOY_VERSION."
+
+TAG_STRING="$REGION-docker.pkg.dev/$PROJECT/$REGISTRY/$TAG:$DEPLOY_VERSION"
+docker tag $TAG:$BUILD_VERSION $TAG_STRING
+docker push $TAG_STRING
+
+echo "[ $(date +%T) ] Pushed container $TAG:$DEPLOY_VERSION."
+
+# if semver string was updated modify the package.json file
+if [ $BUILD_VERSION != $DEPLOY_VERSION ]; then
+  TMP=$(mktemp)
+  jq --arg v "$DEPLOY_VERSION" '.version = $v' package.json > "$TMP" && mv "$TMP" package.json
+  echo "[ $(date +%T) ] Updated package.json version ($DEPLOY_VERSION)."
+fi

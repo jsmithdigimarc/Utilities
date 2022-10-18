@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+# Set ###_SERVICE_NAME_### to the name of the micro service you are developing
+SERVICE_NAME="###_SERVICE_NAME_###"
+
+TAG=${TAG:-$SERVICE_NAME}
+INC_MAJOR=${INC_MAJOR:-false}
+INC_MINOR=${INC_MINOR:-false}
+INC_PATCH=${INC_PATCH:-false}
+
+while [ $# -gt 0 ]; do
+   if [[ $1 == *"--"* ]]; then
+        PARAM="${1/--/}"
+        PARAM="$(echo $PARAM | tr 'a-z' 'A-Z')"
+        PARAM="$(echo $PARAM | tr '-' '_')"
+        if [[ -z $2 ]] || [[ $2 == *"--"* ]] || [[ $2 == "" ]]; then
+          declare $PARAM=true
+        else
+          declare $PARAM="$2"
+        fi
+   fi
+  shift
+done
+
+# Get the current semver from package.json
+PACKAGE_JSON_VERSION="$(jq -r '.version' package.json)"
+VERSION=$PACKAGE_JSON_VERSION
+
+# Split the string into MAJOR, MINOR, and PATCH
+MAJOR=$(echo $VERSION | cut -d. -f1)
+MINOR=$(echo $VERSION | cut -d. -f2)
+PATCH=$(echo $VERSION | cut -d. -f3)
+
+# if --inc-patch increment PATCH
+if [ $INC_PATCH == true ]; then
+  PATCH=$(expr $PATCH + 1)
+fi
+
+# if --inc-minor increment MINOR PATCH back to 0
+if [ $INC_MINOR == true ]; then
+  PATCH=0
+  MINOR=$(expr $MINOR + 1)
+fi
+
+# if --inc-major increment MAJOR and set MINOR and PATCH back to 0
+if [ $INC_MAJOR == true ]; then
+  PATCH=0
+  MINOR=0
+  MAJOR=$(expr $MAJOR + 1)
+fi
+
+# if any of --inc-major, --inc-minor, --inc-patch set the version to the new version
+if [[ ( $INC_MAJOR == true ) || ( $INC_MINOR == true ) || ( $INC_PATCH == true ) ]]; then
+  VERSION="$MAJOR.$MINOR.$PATCH"
+  echo "[ $(date +%T) ] Incrementing package.json version. Was [$PACKAGE_JSON_VERSION] will be [$VERSION]."
+fi
+
+echo "[ $(date +%T) ] Building container $TAG:$VERSION."
+
+# Build the container using the service name as the tag and version it
+docker build . -t $TAG:$VERSION --platform linux/amd64
+
+echo "[ $(date +%T) ] Built container $TAG:$VERSION."
+
+# if semver string was updated modify the package.json file
+if [ $VERSION != $PACKAGE_JSON_VERSION ]; then
+  TMP=$(mktemp)
+  jq --arg v "$VERSION" '.version = $v' package.json > "$TMP" && mv "$TMP" package.json
+  echo "[ $(date +%T) ] Updated package.json version ($VERSION)."
+fi
